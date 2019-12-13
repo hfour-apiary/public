@@ -1,0 +1,761 @@
+FORMAT: 1A
+
+# H4 External API
+
+The H4 API is organized around REST. Our API has predictable resource-oriented URLs, accepts
+JSON-encoded request bodies, returns JSON-encoded responses, and uses standard HTTP response
+codes, authentication, and verbs.
+
+All endpoints are secured via:
+
+- HTTPS transport level secuirty.
+    - The fingerprint of the server-side SSL certificate is available on request to allow client
+      authentication of the server.
+- **A session token is required for all API calls** (see the *Authentication* section for more
+  detail).
+
+The base URL for our API-endpoints is specific to your account, but should be of the form:
+`https://<unique-id>.api.hfour.com/<version>`
+
+If we're hosting multiple H4 libraries for you:
+- we will supply one URL per library
+- each URL allows access to just the subset of your data that resides in that library
+- the session token issued only allows read-only operations defined in this API specification
+
+## Authentication
+
+The H4 API uses API keys to authenticate requests. You can view and manage your API keys in the H4 UI.
+
+Your API keys grant access to your data, so be sure to keep them secure! Do not share your secret API keys
+in publicly accessible areas such as GitHub, client-side code, and so forth.
+
+A typical authentication request is of the form:
+```
+POST /v1/login
+Content-Type: application/json
+
+{
+  "apiKey": "8ed8224c-d13f-4098-a622-..."
+}
+```
+
+...and would yield the response:
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "sessionToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+The session-token provided gives time-limited access to our APIs, and should be included as a `Bearer`
+in the `Authorization` header for everything aside from the `/login` endpoint. E.g.:
+
+```
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+x 
+Things to note:
+- The API-key will be (one-time) retrievable and resetable from the H4 UI by your Admin users, and
+have a lifespan of 30 days by default.
+- The session token has a limited lifetime of 1 hour, re-authentication is required after this
+period. However we'd advise securely disposing of it as soon as your interaction is done, and not
+persisting it anywhere ever.
+
+## Errors
+
+H4 uses conventional HTTP response codes to indicate the success or failure of an API request.
+In general: Codes in the `2xx` range indicate success. Codes in the `4xx` range indicate an error
+that failed given the information provided (e.g., a required parameter was omitted). Codes in the
+`5xx` range indicate an error with H4's servers.
+
+## General Usage Guidelines
+
+Our API is operationally tightly coupled to the provision of other H4 services to your account. We'd
+kindly ask that you respect the following guidelines when building your integration with our API:
+
+- **DO NOT** generate large load spikes by parallelising requests (e.g. to retrieve all pages of
+  a list in parallel; to retrieve all documents and/or their content in parallel). This API is
+  suitable for use in non-interactive background processing scenarios, but it is not tuned for
+  web-scale loads. Please **keep API access serialised** to help us avoid large unexpected 
+  spikes in load.
+  - If we detect excessive load/parallel requests, we will issue HTTP `429 Too Many Requests`
+    responses in the future.
+- **DO NOT** persist or assume session tokens will live beyond a small window of time; make sure
+  calling code handles HTTP `401 Unauthorized` or `403 Forbidden` responses appropriately.
+- **DO** keep track of high-watermark timestamps for polling list endpoints, to allow us to keep
+  request and query load managable/incremental.
+
+## API Versioning
+
+All API endpoints are versioned, and require the version number to be included in the path. The
+current API version is: `v1`. We will notify you of new versions and timelines for deprecation of
+old versions as this happens.
+
+## How to use this API specification
+
+The document you're reading includes the following sections:
+
+- `Reference` - this is where we define our available endpoints, and provide interactive elements
+  to document the expected requests and responses. This includes:
+  - Path for the endpoint.
+  - HTTP method that shold be used (following REST conventions, e.g. GET for reads, POST for creates, PUT for updates).
+  - Path parameters and/or request query parameters as necessary.
+  - JSONSchema for all JSON payloads (request and respons).
+  - Success response examples.
+- `Dats Structures` - this is a more detailed description of the types used in the JSONSchema
+  definitions.
+
+# Group Authentication
+
+## Login [/v1/login]
+
+### Login and generate a session token [POST]
+
+Prior to using any other endpoints, clients must call this endpoint to obtain a session token for use in
+subsequent requests.
+
+Two responses are possible:
+- HTTP `200` status: the response should be treated as an opaque token to be used in the `Authorization`
+  header of subsequent requests. The exact session token format could be changed without notice, so do
+  not make any assumptions about what is returned beyond it being an opaque string.
+
+- HTTP `403 Forbidden`: the authentication token being used is no longer valid and
+  a new token should be obtained from the H4 UI. **DO NOT** attempt to carry on regardless or
+  repeatedly attempt to authenticate.
+
++ Request (application/json)
+
+    + Attributes
+
+        + apiKey: `8ed8224c-d13f-4098-a622-b303fb59167a` (APIKey, required)
+
++ Response 201 (application/json)
+
+    + Attributes
+
+        + sessionToken: `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFsYW50cmVhZHdheSIsImlhdCI6MTU3MjQzMDg5N30.YkO-gG5k5E8djjAxR8wmFop71W_5TGYQFuHpkD21-MrvBy4PF8N99kZhsKOCcWyu4D6wViIE2XL6rHmoFIsMp5RiMszUjmO5Ss9_inACMyaph4RM7T7hu0kSMRHir15pfnAWug6TnEZdmLIrT6by2yQ2n1UUZ_OYzIF9WiC0ZHUUSbemWueZS0gFtPeJiXlpv-xWqAkrU0h6emnv0pd2mn--eQIBoapIKgdN82IF9J0iqJ44vcpqnVViaM6l9n3iQhblK60zjsFi3EQNvfXMef7xgWT08xw65q3r2CglLnU-w0KCC3tbXmz5xh7NnGxh9TPrz6s0lJvLWEblbWkTUQ` (string, required)
+
+# Group Library
+
+A library is a grouping of related *records*. Each *record* is a grouped of related *documents*, typically a
+`main` agreement document and zero or more `amendment` documents.
+
+Each *document* may have associated *metadata*. The *record* also has a consolidated *metadata* data-structure
+which contains the aggregate of all child *document*'s *metadata*.
+
+## Records [/v1/library/records]
+
+Records and information about their contained documents can be retrieved via this endpoint and it's children.
+
+### List all records [GET /v1/library/records{?since,page}]
+
+Retrieval all library records that have been created or updated since a given timestamp.
+
+Things to note:
+- The response is paged; total results, current page and page size are available via response headers
+  `X-Total`, `X-Page` and `X-PageSize` respectively.
+- `since` should be tracked by the client, so that subsequent calls are restricted to a sane time window,
+  as described in the *General Usage Guidelines* section.
+  - as a compromise, it might be acceptable for a daily job quering this endpoint to request the
+    last N days of updates, providing it can deduplicate updates already seen.
+- the full *record* state is returned for all *records* found to match the time-range specified.
+
++ Request
+
+    + Headers
+    
+            Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+
++ Parameters
+
+    + since: 1572432012641 (Timestamp, required)
+      list records changed since this timestamp.
+    + page: 0 (number, required)
+      return this page of results (0-based).
+
++ Response 200 (application/json)
+
+    + Headers
+
+            X-Total: 55
+            X-Page: 0
+            X-PageSize: 10
+
+    + Attributes (LibraryRecordListResponse)
+
+### Retrieve single record [GET /v1/library/records/{recordId}]
+
+Retrieve the data for a specific *record*.
+
++ Request
+
+    + Headers
+    
+            Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+
++ Parameters
+    + recordId: `9fd5ade7-0075-4f2b-8a53-f2780f17b5a4` (EntityID, required)
+      id of record to retrieve.
+
++ Response 200 (application/json)
+
+    + Attributes (LibraryRecord)
+
+### Retrieve document content [GET /v1/library/records/{recordId}/{documentId}{?format}]
+
+Retrieve the human-readable content for a specific *record* and it's child *document*.
+
+Things to note:
+- Depending on the status of the `document`, this endpoint will either directly serve
+  the content, or issue a HTTP `302` redirect to a secure URL where the content can be
+  retrieved. Clients should be aware of this scenario and behave accordingly.
+  - Be aware that the returned URL is only accessible for a short time period, typically
+    < 5 minutes. Clients should follow the redirect immediately to retrieve content
+    in this scenario.
+  - For mocking purposes, the examples return a `github.com` URL; the real API response
+    for the `302` case is likely to be a signed URL from a Cloud service provider, e.g:
+    ```
+    https://hfour-secure-doc-delivery.s3.amazonaws.com/client-id/8b2068e3-56af-4364-a736-494d1aec604d?Content-Type=application%2Fpdf&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=ASIA5YZ45XC2S36RIJAL%2F20191101%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20191101T103218Z&X-Amz-Expires=300&X-Amz-Security-Token=IQoJb3JpZ2luX2VjEOP%2F%2F%2F%2F%2F%2F%2F%2F%2F%2FwEaCXVzLWVhc3QtMSJHMEUCIFPG6LIcMIGVokaoaEsoOnPpNKo7HpuWFAIEg3Jaa2LxAiEA33hTFyulsskNcScWWJFySey39h0mvYrktvOuKaCBDu0q9gEI7P%2F%2F%2F%2F%2F%2F%2F%2F%2F%2FARACGgw5NDY2MzExOTQ4MDUiDNpCcnUqRSosC2fSqSrKAWzVlSVatr8GYJ1AixW0pAdzQ4ej%2FA00Z3Ev5U8aIqEpmkr9f2d3LJ8IYKDq8nd5VvHGXznjqPINpdfmotOTcL3XAhI6pAbMrP%2Bfz%2Bfq6FAx6jOU0DREXHL7PZX7uiT3PwggN39j%2FUnCYboEztxZrexnhJ3gnAcymur7F75cDAnyYp5Lths4SXCwlpDSNTZzakpHontMEOyO%2FYcwA3xcQZmh0OT%2Fp0OL%2BoYyyvxvm%2BnYEyWbqfzyVeMX65cwbErt8FojkgU07Cdu8eIwyZLw7QU64AHYe53lllZ8M1DcisDrieHP9avUkMNHTkwM5%2FxceIvV5elF5zw%2B1KbNotDtPNqFVSXXZQJlRfJ%2BBMRBGYH02napT5GTgarwRXVpzycznQrtUYjEjpYtGbD1Aw8Ts4Uun%2ByVAO%2BGHrHa2GJybVJqxBv8Qesc3uiYW82Ic313dty6a3qL6Vs%2F0ttQIFPRTNsOl8DJn%2BSOOrNnTnvTJiBc8VR9nuMYDryyKhl26xRkg351CR7C2FvQE4hEKbk57ayA62sVp62CGOm6UpugS554o5ZjBFfhpX7t1xynwe9TIWB4%2FQ%3D%3D&X-Amz-Signature=9bb5407db2af664c6325a3bcb39d61305e944acee463261f00a071f257e3b8c8&X-Amz-SignedHeaders=host
+    ```
+
+- `pdf` is the only supported format, but the parameter is present for future extension.
+
+The real API response
+
++ Request
+
+    + Headers
+    
+            Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+
++ Parameters
+    + recordId: `9fd5ade7-0075-4f2b-8a53-f2780f17b5a4` (EntityID, required)
+      id of record containing document to retrieve
+    + documentId: `9fd5ade7-0075-4f2b-8a53-f2780f17b5a4` (EntityID, required)
+      id of document content to retrieve
+    + format: `pdf` (enum[string], required)
+      format of content to retrieve
+      
+        + Members
+            + `pdf` (default)
+
++ Response 302
+
+    + Headers
+    
+            Location: https://github.com/hfour-apiary/public/raw/master/hfour-mock-doc.pdf
+
++ Response 200 (application/pdf)
+
+# Data Structures
+
+## EntityID (string)
+H4 unique idetifier for an entity. Should be treated as an opaque string, although this is likely to be a v4 UUID. e.g. `9fd5ade7-0075-4f2b-8a53-f2780f17b5a4`
+
+## APIKey (string)
+H4 supplied token authenticating the identity of a user to the API.
+
+## Timestamp (number)
+Timestamp in milliseconds since the epoch (1st Jan 1970).
+
+## DateTimeString (string)
+[ISO8601](http://en.wikipedia.org/wiki/ISO_8601) formatted date/time string. e.g. `2019-10-05T14:48:00.000Z`
+
+## LibraryRecordMetadata (object, fixed)
+Latest version of combined metadata from contained documents.
+
+### Properties
++ parties (array[Party], required, fixed)
++ beginsInForceDate: `2019-10-05T14:48:00.000Z` (DateTimeString, required, sample)
++ effectiveDate: `2019-10-05T14:48:00.000Z` (DateTimeString, required, sample) - effective date of the agreement
++ termination (object, optional)
+    + clientNoticePeriodDays: `45` (number, optional, sample)
+    + type (TerminationType, required, fixed)
++ governingLaw (object, optional)
+    + name (GoverningLawName, required, fixed)
+    + country (ISO3166CountryCode, required, fixed)
+
+## LibraryRecord (object)
+### Properties
++ id: `9fd5ade7-0075-4f2b-8a53-f2780f17b5a4` (EntityID, required, sample)
+  unique H4 record id
++ created: `2019-10-05T14:48:00.000Z` (DateTimeString, required, sample)
+  creation time for the record on the H4 platform
++ updated: `2019-10-05T14:48:00.000Z` (DateTimeString, required, sample)
+  last update time for the record on the H4 platform
++ metadata (LibraryRecordMetadata, required)
+  metadata associated with this document
++ documents (array[LibraryDocument], required)
+  documents that are part of the record
+
+## LibraryDocument (object, fixed)
+Data relating to a particular document within a library.
+
+### Properties
++ id: `9fd5ade7-0075-4f2b-8a53-f2780f17b5a4` (EntityID, required, sample)
+  unique H4 document id
++ created: `2019-10-05T14:48:00.000Z` (DateTimeString, required, sample)
+  creation time for the document on the H4 platform
++ updated: `2019-10-05T14:48:00.000Z` (DateTimeString, required, sample)
+  last update time for the document on the H4 platform
++ metadata (LibraryDocumentMetadata, required, fixed)
+  metadata associated with this document
++ type (LibraryDocumentType, required, fixed)
+
+## LibraryDocumentType (enum, fixed)
+Type of document
+
+### Sample
++ `main`
+
+### Members
++ `main` - the main document within the enclosing record.
++ `amendment` - amendment to the main document within the enclosing record.
+
+## LibraryDocumentMetadata (object, fixed)
+Metadata associated with a document. NOTE: This doesn't include any extensions agreed with H4, the definition
+here is only our core metadata fields applicable to any document.
+
+### Properties
++ effectiveDate: `2019-10-05T14:48:00.000Z` (DateTimeString, required, sample) - effective date of the amendment
+
+## TerminationType (enum)
+Termination clause type for a document.
+
+### Sample
++ `by-counterparty`
+
+### Members
++ `by-counterparty`
++ `by-parent`
+
+## Party (object)
+Legal entity that is a party to the contract in a particular document.
+
+### Properties
++ externalId: `123` (string, optional, sample)
+  Your identifier for this party, or a unique identifier automatically assigned by H4 if not supplied by you, and required for referencing purposes.
++ name: `Bank of Elbonia - London Branch` (string, required, sample)
+  Human-readable legal name for this party.
++ role (PartyRole, required)
+  Role of this party with regards to the document.
+
+## PartyRole (enum)
+Represents the role of a party with relation to a document.
+
+### Sample
+
++ `parent`
+
+### Members
+
++ `client` - client of the entity issuing the document.
++ `parent` - parent entity for the document.
++ `general-partner`
++ `trustee`
++ `purchaser`
++ `collateral-agent`
++ `lender`
++ `investor`
++ `collateral-provider-seller`
++ `secured-party`
++ `pledgor`
++ `bank`
++ `legalEntity` - legal entity related to the document without a more specific role.
+
+## LibraryRecordListResponse (array[LibraryRecord], fixed)
+Page of records returned from a record list request.
+
+## LibraryDocumentListResponse (array[LibraryDocument], fixed)
+Page of documents returned from a document list request.
+
+## ISO3166CountryCode (enum)
+ISO 3166-1 2-digit country code.
+
+### Sample
++ `GB`
+
+### Members
++ `AX`
++ `AF`
++ `AL`
++ `DZ`
++ `AS`
++ `AD`
++ `AO`
++ `AI`
++ `AQ`
++ `AG`
++ `AR`
++ `AM`
++ `AW`
++ `AU`
++ `AT`
++ `AZ`
++ `BS`
++ `BH`
++ `BD`
++ `BB`
++ `BY`
++ `BE`
++ `BZ`
++ `BJ`
++ `BM`
++ `BT`
++ `BO`
++ `BQ`
++ `BA`
++ `BW`
++ `BV`
++ `BR`
++ `IO`
++ `BN`
++ `BG`
++ `BF`
++ `BI`
++ `CV`
++ `KH`
++ `CM`
++ `CA`
++ `KY`
++ `CF`
++ `TD`
++ `CL`
++ `CN`
++ `CX`
++ `CC`
++ `CO`
++ `KM`
++ `CD`
++ `CG`
++ `CK`
++ `CR`
++ `CI`
++ `HR`
++ `CU`
++ `CW`
++ `CY`
++ `CZ`
++ `DK`
++ `DJ`
++ `DM`
++ `DO`
++ `EC`
++ `EG`
++ `SV`
++ `GQ`
++ `ER`
++ `EE`
++ `SZ`
++ `ET`
++ `FK`
++ `FO`
++ `FJ`
++ `FI`
++ `FR`
++ `GF`
++ `PF`
++ `TF`
++ `GA`
++ `GM`
++ `GE`
++ `DE`
++ `GH`
++ `GI`
++ `GR`
++ `GL`
++ `GD`
++ `GP`
++ `GU`
++ `GT`
++ `GG`
++ `GN`
++ `GW`
++ `GY`
++ `HT`
++ `HM`
++ `VA`
++ `HN`
++ `HK`
++ `HU`
++ `IS`
++ `IN`
++ `ID`
++ `IR`
++ `IQ`
++ `IE`
++ `IM`
++ `IL`
++ `IT`
++ `JM`
++ `JP`
++ `JE`
++ `JO`
++ `KZ`
++ `KE`
++ `KI`
++ `KP`
++ `KR`
++ `KW`
++ `KG`
++ `LA`
++ `LV`
++ `LB`
++ `LS`
++ `LR`
++ `LY`
++ `LI`
++ `LT`
++ `LU`
++ `MO`
++ `MK`
++ `MG`
++ `MW`
++ `MY`
++ `MV`
++ `ML`
++ `MT`
++ `MH`
++ `MQ`
++ `MR`
++ `MU`
++ `YT`
++ `MX`
++ `FM`
++ `MD`
++ `MC`
++ `MN`
++ `ME`
++ `MS`
++ `MA`
++ `MZ`
++ `MM`
++ `NA`
++ `NR`
++ `NP`
++ `NL`
++ `NC`
++ `NZ`
++ `NI`
++ `NE`
++ `NG`
++ `NU`
++ `NF`
++ `MP`
++ `NO`
++ `OM`
++ `PK`
++ `PW`
++ `PS`
++ `PA`
++ `PG`
++ `PY`
++ `PE`
++ `PH`
++ `PN`
++ `PL`
++ `PT`
++ `PR`
++ `QA`
++ `RE`
++ `RO`
++ `RU`
++ `RW`
++ `BL`
++ `SH`
++ `KN`
++ `LC`
++ `MF`
++ `PM`
++ `VC`
++ `WS`
++ `SM`
++ `ST`
++ `SA`
++ `SN`
++ `RS`
++ `SC`
++ `SL`
++ `SG`
++ `SX`
++ `SK`
++ `SI`
++ `SB`
++ `SO`
++ `ZA`
++ `GS`
++ `SS`
++ `ES`
++ `LK`
++ `SD`
++ `SR`
++ `SJ`
++ `SE`
++ `CH`
++ `SY`
++ `TW`
++ `TJ`
++ `TZ`
++ `TH`
++ `TL`
++ `TG`
++ `TK`
++ `TO`
++ `TT`
++ `TN`
++ `TR`
++ `TM`
++ `TC`
++ `TV`
++ `UG`
++ `UA`
++ `AE`
++ `GB`
++ `UM`
++ `US`
++ `UY`
++ `UZ`
++ `VU`
++ `VE`
++ `VN`
++ `VG`
++ `VI`
++ `WF`
++ `EH`
++ `YE`
++ `ZM`
++ `ZW`
+
+## GoverningLawName (enum)
+
+### Sample
+
++ `english-law`
+
+### Members
+
++ `account-location` - special value for cases where governing law is dependant on account location
++ `anguillan-law`
++ `australian-capital-territory-law`
++ `australian-law`
++ `austrian-law`
++ `belgian-law`
++ `bermudan-law`
++ `brazilian-law`
++ `canadian-law`
++ `chinese-law`
++ `czech-law`
++ `danish-law`
++ `district-of-columbia`
++ `dutch-law`
++ `english-law`
++ `finnish-law`
++ `french-law`
++ `german-law`
++ `greek-law`
++ `hong-kong-law`
++ `hungarian-law`
++ `indian-law`
++ `indonesian-law`
++ `irish-law`
++ `island-of-guernsey-law`
++ `italian-law`
++ `japanese-law`
++ `jersey-law`
++ `jordan-law`
++ `korean-law`
++ `law-of-commonwealth-of-puerto-rico`
++ `law-of-mauritius`
++ `law-of-province-of-alberta`
++ `law-of-province-of-british-columbia`
++ `law-of-province-of-ontario`
++ `law-of-province-of-quebec`
++ `law-of-republic-of-chile`
++ `law-of-republic-of-colombia`
++ `law-of-the-cayman-islands`
++ `law-of-the-republic-of-south-africa`
++ `laws-of-england-and-wales`
++ `laws-of-scotland`
++ `luxembourg-law`
++ `malaysian-law`
++ `mexican-law`
++ `netherlands`
++ `new-south-wales-law`
++ `new-zealand-law`
++ `norwegian-law`
++ `not-applicable`
++ `nova-scotia`
++ `philippine-law`
++ `polish-law`
++ `referenced-agreement`
++ `republic-of-vanuatu`
++ `romanian-law`
++ `russian-law`
++ `saudi-arabia-law`
++ `silent`
++ `singapore`
++ `sint-maarten-law`
++ `slovak-law`
++ `south-australia-law`
++ `spanish-law`
++ `state-of-alabama`
++ `state-of-alaska`
++ `state-of-arizona`
++ `state-of-arkansas`
++ `state-of-california`
++ `state-of-colorado`
++ `state-of-connecticut`
++ `state-of-delaware`
++ `state-of-florida`
++ `state-of-georgia`
++ `state-of-hawaii`
++ `state-of-idaho`
++ `state-of-illinois`
++ `state-of-indiana`
++ `state-of-iowa`
++ `state-of-kansas`
++ `state-of-kentucky`
++ `state-of-louisiana`
++ `state-of-maine`
++ `state-of-maryland`
++ `state-of-massachusetts`
++ `state-of-michigan`
++ `state-of-minnesota`
++ `state-of-mississippi`
++ `state-of-missouri`
++ `state-of-montana`
++ `state-of-nebraska`
++ `state-of-nevada`
++ `state-of-new-hampshire`
++ `state-of-new-jersey`
++ `state-of-new-mexico`
++ `state-of-new-york`
++ `state-of-north-carolina`
++ `state-of-north-dakota`
++ `state-of-ohio`
++ `state-of-oklahoma`
++ `state-of-oregon`
++ `state-of-pennsylvania`
++ `state-of-rhode-island`
++ `state-of-south-carolina`
++ `state-of-south-dakota`
++ `state-of-tennessee`
++ `state-of-texas`
++ `state-of-utah`
++ `state-of-vermont`
++ `state-of-virginia`
++ `state-of-washington`
++ `state-of-west-virginia`
++ `state-of-wisconsin`
++ `state-of-wyoming`
++ `swedish-law`
++ `swiss-law`
++ `taiwan-law`
++ `thai-law`
++ `us-virgin-islands-law`
++ `united-states-of-america-law`
++ `victoria-law`
++ `vietnamese-law`
++ `western-australia-law`
